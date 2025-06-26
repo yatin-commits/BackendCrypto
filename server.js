@@ -1,4 +1,3 @@
-// ```javascript
 const express = require("express");
 const cors = require("cors");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -10,7 +9,7 @@ const app = express();
 const { PORT = 3000 } = require("./config/env");
 
 const corsOptions = {
-  origin: ["http://localhost:5173","https://crypto-frontend-khaki.vercel.app"],
+  origin: ["http://localhost:5173", "https://crypto-frontend-khaki.vercel.app"],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
@@ -35,7 +34,6 @@ if (process.env.NODE_ENV === "development") {
 app.get("/", (req, res) => {
   res.json({ message: "Welcome to the Crypto API!" });
 });
-
 
 app.use("/api", require("./routes/authRoutes"));
 app.use("/api", require("./routes/walletRoutes"));
@@ -67,6 +65,47 @@ app.get("/api/nomics/currencies/ticker", async (req, res) => {
   }
 });
 
+// News API proxy endpoint
+const newsCache = new Map();
+app.get("/api/news", async (req, res) => {
+  const { q } = req.query;
+  const cacheKey = JSON.stringify(req.query);
+
+  // Check cache
+  const cached = newsCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+    return res.json(cached.data);
+  }
+
+  if (!q) {
+    return res.status(400).json({ message: 'Query parameter "q" is required' });
+  }
+
+  try {
+    const response = await axios.get("https://newsapi.org/v2/everything", {
+      params: {
+        q,
+        apiKey: "e577fe77ce0743949caa84c1628415d8",
+        language: 'en',
+        pageSize: 3,
+        sortBy: 'publishedAt',
+      },
+    });
+
+    newsCache.set(cacheKey, { data: response.data, timestamp: Date.now() });
+    res.json(response.data);
+  } catch (err) {
+    console.error("News API Error:", {
+      message: err.message,
+      status: err.response?.status,
+      data: err.response?.data,
+    });
+    res.status(err.response?.status || 500).json({
+      message: err.response?.data?.message || 'Error fetching news',
+    });
+  }
+});
+
 const genAI = new GoogleGenerativeAI("AIzaSyB-2bhc_UYCa-tfOIv5y5SEcE_p-sZibAA");
 
 app.post("/api/crypto-query", async (req, res) => {
@@ -86,8 +125,6 @@ app.post("/api/crypto-query", async (req, res) => {
     res.status(500).json({ answer: "Sorry, something went wrong. Please try again." });
   }
 });
-
-module.exports = app;
 
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });
