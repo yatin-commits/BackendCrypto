@@ -156,15 +156,13 @@ router.post("/login", async (req, res) => {
 
 
 // ✅ 4. Google login (no password)
+// ✅ 4. Google login (no password)
 router.post("/user/google-login", async (req, res) => {
-  // Frontend se Google sign-in data le rahe hain
   const { user_id, email, username } = req.body;
 
   try {
-    // Pehle check kar rahe hain ki user already exist karta hai ya nahi
     const [results] = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
 
-    // Agar user exist nahi karta toh register kar rahe hain
     if (results.length === 0) {
       await connection.query(
         "INSERT INTO users (user_id, username, email) VALUES (?, ?, ?)",
@@ -172,16 +170,23 @@ router.post("/user/google-login", async (req, res) => {
       );
     }
 
-    // Agar user already exist karta hai toh bas login message bhejna
-    res.status(200).json({ message: "Google user already exists. Logging in..." });
     const token = jwt.sign({ id: user_id, email }, SECRET_KEY, { expiresIn: "1h" });
     setAuthCookie(res, token);
 
-    res.status(200).json({ message: "Google login successful" });
+    res.status(200).json({
+      message: "Google login successful",
+      token,
+      user_id,
+      username,
+    }); // ✅ Only one response sent here
   } catch (err) {
-    res.status(500).json({ message: "Google login error", error: err });
+    console.error("Google Login Error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ message: "Google login error", error: err });
+    }
   }
 });
+
 
 // Is route module ko export kar rahe hain taaki app.js mein use ho sake
 // ✅ 5. Logout route (clears cookie)
