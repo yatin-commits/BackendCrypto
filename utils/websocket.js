@@ -7,9 +7,17 @@ let clientSubscriptions = new Map();
 let binanceSocket = null;
 
 function setupWebSocketServer(server) {
-  const io = socketIo(server, {
-    cors: { origin: "http://localhost:5173" }
-  });
+const io = socketIo(server, {
+  cors: {
+    origin: [
+      "http://localhost:5173",
+      "https://crypto-frontend-khaki.vercel.app"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
 
   function connectToBinance() {
     if (binanceSocket && binanceSocket.readyState === WebSocket.OPEN) {

@@ -10,7 +10,7 @@ const app = express();
 const { PORT = 3000 } = require("./config/env");
 
 const corsOptions = {
-  origin: "http://localhost:5173",
+  origin: ["http://localhost:5173","https://crypto-frontend-khaki.vercel.app"],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
