@@ -32,6 +32,11 @@ if (process.env.NODE_ENV === "development") {
   });
 }
 
+app.get("/", (req, res) => {
+  res.json({ message: "Welcome to the Crypto API!" });
+});
+
+
 app.use("/api", require("./routes/authRoutes"));
 app.use("/api", require("./routes/walletRoutes"));
 app.use("/api", require("./routes/wishlistRoutes"));
