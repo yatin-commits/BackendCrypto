@@ -28,27 +28,26 @@ const rateLimiters = {
     const ip = req.ip;
     const now = Date.now();
     
-    if (!this.otpRequests[ip]) {
-      this.otpRequests[ip] = { count: 1, firstAttempt: now };
+    if (!rateLimiters.otpRequests[ip]) {
+      rateLimiters.otpRequests[ip] = { count: 1, firstAttempt: now };
       return next();
     }
     
     // Reset if hour has passed
-    if (now - this.otpRequests[ip].firstAttempt > 3600000) {
-      this.otpRequests[ip] = { count: 1, firstAttempt: now };
+    if (now - rateLimiters.otpRequests[ip].firstAttempt > 3600000) {
+      rateLimiters.otpRequests[ip] = { count: 1, firstAttempt: now };
       return next();
     }
     
-  // Check if limit exceeded
-if (this.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
-  const waitTime = Math.ceil((3600000 - (now - this.otpRequests[ip].firstAttempt)) / 1000);
-  return res.status(429).json({
-    message: `Too many OTP requests. Try again in ${waitTime} seconds.`
-  });
-}
-
+    // Check if limit exceeded
+    if (rateLimiters.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
+      const waitTime = Math.ceil((3600000 - (now - rateLimiters.otpRequests[ip].firstAttempt)) / 1000);
+      return res.status(429).json({
+        message: `Too many OTP requests. Try again in ${waitTime} seconds.`
+      });
+    }
     
-    this.otpRequests[ip].count++;
+    rateLimiters.otpRequests[ip].count++;
     next();
   },
   
@@ -57,26 +56,26 @@ if (this.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
     const ip = req.ip;
     const now = Date.now();
     
-    if (!this.loginAttempts[ip]) {
-      this.loginAttempts[ip] = { count: 1, firstAttempt: now };
+    if (!rateLimiters.loginAttempts[ip]) {
+      rateLimiters.loginAttempts[ip] = { count: 1, firstAttempt: now };
       return next();
     }
     
     // Reset if hour has passed
-    if (now - this.loginAttempts[ip].firstAttempt > 3600000) {
-      this.loginAttempts[ip] = { count: 1, firstAttempt: now };
+    if (now - rateLimiters.loginAttempts[ip].firstAttempt > 3600000) {
+      rateLimiters.loginAttempts[ip] = { count: 1, firstAttempt: now };
       return next();
     }
     
     // Check if limit exceeded
-    if (this.loginAttempts[ip].count >= SECURITY.LOGIN_ATTEMPTS) {
-      const waitTime = Math.ceil((3600000 - (now - this.loginAttempts[ip].firstAttempt)) / 1000;
+    if (rateLimiters.loginAttempts[ip].count >= SECURITY.LOGIN_ATTEMPTS) {
+      const waitTime = Math.ceil((3600000 - (now - rateLimiters.loginAttempts[ip].firstAttempt)) / 1000);
       return res.status(429).json({
         message: `Too many login attempts. Try again in ${waitTime} seconds.`
       });
     }
     
-    this.loginAttempts[ip].count++;
+    rateLimiters.loginAttempts[ip].count++;
     next();
   }
 };
@@ -108,6 +107,19 @@ const validatePassword = (password) => {
          /[^A-Za-z0-9]/.test(password);
 };
 
+// JWT verification middleware
+const authenticateToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ message: "No token provided" });
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(403).json({ message: "Invalid token" });
+  }
+};
+
 // ======================= ROUTES =======================
 
 // 1. Send OTP with rate limiting and security checks
@@ -132,8 +144,7 @@ router.post("/send-otp", rateLimiters.limitOtpRequests, async (req, res) => {
   const otp = Math.floor(100000 + Math.random() * 900000);
   const otpHash = await bcrypt.hash(otp.toString(), 8);
   
-  otpStorage.currentIP = req.ip; // Store IP for security checks
-  otpStorage.add(email, otpHash);
+  otpStorage.add(email, otpHash, req.ip); // Store IP with OTP
   
   // Send email
   try {
@@ -163,20 +174,23 @@ router.post("/register", async (req, res) => {
     });
   }
   
-  // Verify OTP
-  const isValid = await otpStorage.verify(email, otp);
+  // Verify OTP with IP check
+  const isValid = await otpStorage.verify(email, otp, req.ip);
   if (!isValid) {
     return res.status(400).json({ message: "Invalid OTP or too many attempts" });
   }
   
   try {
     // Check if user exists
-    const [existing] = await connection.query(
+    const [rows] = await connection.query(
       "SELECT * FROM users WHERE email = ?", 
       [email]
     );
+    if (!Array.isArray(rows)) {
+      throw new Error("Unexpected database query result format");
+    }
     
-    if (existing.length > 0) {
+    if (rows.length > 0) {
       return res.status(400).json({ message: "Email already registered" });
     }
     
@@ -190,7 +204,7 @@ router.post("/register", async (req, res) => {
     );
     
     // Generate token
-    const token = jwt.sign({ id: userId, email }, SECRET_KEY, { 
+    const token = jwt.sign({ id: userId, email, ip: req.ip }, SECRET_KEY, { 
       expiresIn: SECURITY.TOKEN_EXPIRY 
     });
     
@@ -215,16 +229,19 @@ router.post("/login", rateLimiters.limitLoginAttempts, async (req, res) => {
   }
   
   try {
-    const [users] = await connection.query(
+    const [rows] = await connection.query(
       "SELECT * FROM users WHERE email = ?", 
       [email]
     );
+    if (!Array.isArray(rows)) {
+      throw new Error("Unexpected database query result format");
+    }
     
-    if (users.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
     
-    const user = users[0];
+    const user = rows[0];
     const isMatch = await bcrypt.compare(password, user.password);
     
     if (!isMatch) {
@@ -256,13 +273,16 @@ router.post("/user/google-login", async (req, res) => {
   const { user_id, email, username } = req.body;
   
   try {
-    const [existing] = await connection.query(
+    const [rows] = await connection.query(
       "SELECT * FROM users WHERE email = ?", 
       [email]
     );
+    if (!Array.isArray(rows)) {
+      throw new Error("Unexpected database query result format");
+    }
     
     // Register if new user
-    if (existing.length === 0) {
+    if (rows.length === 0) {
       await connection.query(
         "INSERT INTO users (user_id, username, email) VALUES (?, ?, ?)",
         [user_id, username, email]
@@ -290,7 +310,7 @@ router.post("/user/google-login", async (req, res) => {
 });
 
 // 5. Secure logout
-router.post("/logout", (req, res) => {
+router.post("/logout", authenticateToken, (req, res) => {
   // In a real app, you might want to blacklist the token here
   res.json({ message: "Logged out successfully" });
 });
