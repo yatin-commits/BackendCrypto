@@ -10,7 +10,7 @@ const app = express();
 app.use(cors({
   origin: [
     'http://localhost:5173', 
-    'https://cointrading.vercel.app/'
+    'https://cointrading.vercel.app'
   ],
   credentials: true
 }));
