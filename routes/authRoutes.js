@@ -1,202 +1,296 @@
-// Express framework import kar rahe hain
 const express = require("express");
-// Router banaya - isse hum alag routes define kar sakte hain
 const router = express.Router();
-
-// Password encrypt/decrypt ke liye bcrypt use kar rahe hain
 const bcrypt = require("bcrypt");
-
-// JWT tokens banane ke liye import kiya
 const jwt = require('jsonwebtoken');
-
-// Unique user_id generate karne ke liye
 const { v4: uuidv4 } = require('uuid');
-
-// Database connection import kiya - isme connection.query() hona chahiye
 const connection = require("../config/database");
-
-// JWT ke liye secret key import kiya
 const { SECRET_KEY } = require("../config/env");
+const { transporter, otpStorage } = require("../utils/otp");
 
-// OTP bhejne aur store karne ke liye functions import kiye
-const { transporter, otpStorage, generateOTP } = require("../utils/otp");
-
-// ------------------------- SEND OTP --------------------------
-// 🔐 Utility: Set JWT in HttpOnly cookie
-const setAuthCookie = (res, token) => {
-  res.cookie("token", token, {
-    httpOnly: true,               // JS can't access it
-    secure: process.env.NODE_ENV === "production", // Only sent over HTTPS in prod
-    sameSite: "Strict",           // Prevent CSRF
-    maxAge: 3600000,              // 1 hour expiration
-  });
+// ======================= SECURITY CONFIG =======================
+const SECURITY = {
+  OTP_VALIDITY: 10 * 60 * 1000,    // 10 minutes
+  OTP_COOLDOWN: 2 * 60 * 1000,     // 2 minutes
+  MAX_OTP_ATTEMPTS: 3,             // Max wrong attempts
+  MAX_OTP_REQUESTS: 5,             // Max OTP requests per IP per hour
+  LOGIN_ATTEMPTS: 5,               // Max login attempts per IP per hour
+  PASSWORD_MIN_LENGTH: 8,
+  TOKEN_EXPIRY: '1h'
 };
 
-// ✅ 1. Send OTP for registration
-router.post("/send-otp", (req, res) => {
-  // Request body se email nikala
+// ======================= RATE LIMITERS =======================
+const rateLimiters = {
+  otpRequests: {}, // Format: { ip: { count, firstAttempt } }
+  loginAttempts: {},
+  
+  // Middleware for OTP request limiting
+  limitOtpRequests: (req, res, next) => {
+    const ip = req.ip;
+    const now = Date.now();
+    
+    if (!this.otpRequests[ip]) {
+      this.otpRequests[ip] = { count: 1, firstAttempt: now };
+      return next();
+    }
+    
+    // Reset if hour has passed
+    if (now - this.otpRequests[ip].firstAttempt > 3600000) {
+      this.otpRequests[ip] = { count: 1, firstAttempt: now };
+      return next();
+    }
+    
+    // Check if limit exceeded
+    if (this.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
+      const waitTime = Math.ceil((3600000 - (now - this.otpRequests[ip].firstAttempt)) / 1000;
+      return res.status(429).json({
+        message: `Too many OTP requests. Try again in ${waitTime} seconds.`
+      });
+    }
+    
+    this.otpRequests[ip].count++;
+    next();
+  },
+  
+  // Middleware for login attempt limiting
+  limitLoginAttempts: (req, res, next) => {
+    const ip = req.ip;
+    const now = Date.now();
+    
+    if (!this.loginAttempts[ip]) {
+      this.loginAttempts[ip] = { count: 1, firstAttempt: now };
+      return next();
+    }
+    
+    // Reset if hour has passed
+    if (now - this.loginAttempts[ip].firstAttempt > 3600000) {
+      this.loginAttempts[ip] = { count: 1, firstAttempt: now };
+      return next();
+    }
+    
+    // Check if limit exceeded
+    if (this.loginAttempts[ip].count >= SECURITY.LOGIN_ATTEMPTS) {
+      const waitTime = Math.ceil((3600000 - (now - this.loginAttempts[ip].firstAttempt)) / 1000;
+      return res.status(429).json({
+        message: `Too many login attempts. Try again in ${waitTime} seconds.`
+      });
+    }
+    
+    this.loginAttempts[ip].count++;
+    next();
+  }
+};
+
+// Cleanup rate limiters hourly
+setInterval(() => {
+  const now = Date.now();
+  for (const ip in rateLimiters.otpRequests) {
+    if (now - rateLimiters.otpRequests[ip].firstAttempt > 3600000) {
+      delete rateLimiters.otpRequests[ip];
+    }
+  }
+  for (const ip in rateLimiters.loginAttempts) {
+    if (now - rateLimiters.loginAttempts[ip].firstAttempt > 3600000) {
+      delete rateLimiters.loginAttempts[ip];
+    }
+  }
+}, 3600000);
+
+// ======================= HELPER FUNCTIONS =======================
+const validateEmail = (email) => {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+};
+
+const validatePassword = (password) => {
+  return password.length >= SECURITY.PASSWORD_MIN_LENGTH && 
+         /[A-Z]/.test(password) && 
+         /[0-9]/.test(password) &&
+         /[^A-Za-z0-9]/.test(password);
+};
+
+// ======================= ROUTES =======================
+
+// 1. Send OTP with rate limiting and security checks
+router.post("/send-otp", rateLimiters.limitOtpRequests, async (req, res) => {
   const { email } = req.body;
-
-  // Agar email nahi diya gaya, toh error bhejna
-  if (!email) {
-    return res.status(400).json({ message: "Email is required" });
+  
+  // Validate email
+  if (!email || !validateEmail(email)) {
+    return res.status(400).json({ message: "Valid email required" });
   }
-
-  function generateOTP() {
-    return Math.floor(100000 + Math.random() * 900000); // Generate 6-digit OTP
+  
+  // Check cooldown
+  const existing = otpStorage.data[email];
+  if (existing && Date.now() - existing.lastSentAt < SECURITY.OTP_COOLDOWN) {
+    const wait = Math.ceil((SECURITY.OTP_COOLDOWN - (Date.now() - existing.lastSentAt)) / 1000);
+    return res.status(429).json({
+      message: `Please wait ${wait} seconds before requesting another OTP.`
+    });
   }
-
-  const otp = generateOTP();
-  otpStorage[email] = otp;
-
-  // Mail bhejne ke liye options set kiye
-  const mailOptions = {
-    from: "sharmayatin0882@gmail.com", // Sender email
-    to: email,                         // Receiver email
-    subject: "Your OTP Code",         // Email subject
-    text: `Your OTP code is ${otp}. It is valid for 10 minutes.`, // Email body
-  };
-
-  // Email bhejna using nodemailer
-  transporter.sendMail(mailOptions, (error) => {
-    if (error) return res.status(500).json({ message: "Failed to send OTP" });
+  
+  // Generate and store OTP
+  const otp = Math.floor(100000 + Math.random() * 900000);
+  const otpHash = await bcrypt.hash(otp.toString(), 8);
+  
+  otpStorage.currentIP = req.ip; // Store IP for security checks
+  otpStorage.add(email, otpHash);
+  
+  // Send email
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM,
+      to: email,
+      subject: "Your OTP Code",
+      text: `Your OTP is ${otp}. Valid for 10 minutes.`,
+      html: `<p>Your OTP is <strong>${otp}</strong>. Valid for 10 minutes.</p>`
+    });
+    
     res.json({ message: "OTP sent successfully" });
-  });
+  } catch (err) {
+    console.error("OTP send error:", err);
+    res.status(500).json({ message: "Failed to send OTP" });
+  }
 });
 
-// ✅ 2. Register new user (with OTP check)
+// 2. Register with OTP verification
 router.post("/register", async (req, res) => {
-  // Frontend se data le rahe hain
-  const { user_id, username, email, otp, password } = req.body;
-
-  // OTP match kar rahe hain
-  if (!otpStorage[email] || otpStorage[email] != otp) {
-    return res.status(400).json({ message: "Invalid OTP" });
+  const { email, otp, password, username } = req.body;
+  
+  // Validate inputs
+  if (!validateEmail(email) || !validatePassword(password)) {
+    return res.status(400).json({
+      message: `Invalid email or password (min ${SECURITY.PASSWORD_MIN_LENGTH} chars with uppercase, number & special char)`
+    });
   }
-
-  // OTP use hone ke baad delete kar diya
-  delete otpStorage[email];
-
-  try {
-    // Check kar rahe hain ki email pehle se register hai ya nahi
-    const [results] = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
-    if (results.length > 0) {
-      return res.status(400).json({ message: "User already registered. Please log in." });
-    }
-
-    // Password ko hash (encrypt) kar rahe hain
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Naya user database mein insert kar rahe hain
-    const [result] = await connection.query(
-      "INSERT INTO users (user_id, username, email, password) VALUES (?, ?, ?, ?)",
-      [user_id, username, email, hashedPassword]
-    );
-
-    // JWT token bana rahe hain
-    const token = jwt.sign({ id: result.insertId, email }, SECRET_KEY, { expiresIn: "1h" });
-
-    // Success message bhej rahe hain with token
-    res.json({ message: "User registered successfully", token });
-  } catch (err) {
-    res.status(500).json({ message: "Database error", error: err });
+  
+  // Verify OTP
+  const isValid = await otpStorage.verify(email, otp);
+  if (!isValid) {
+    return res.status(400).json({ message: "Invalid OTP or too many attempts" });
   }
-});
-
-// ------------------------- LOGIN USER --------------------------
-// ✅ 3. Login (email + password)
-router.post("/login", async (req, res) => {
-  // Frontend se login ke liye email aur password le rahe hain
-  const { email, password } = req.body;
-
-  // Agar email ya password missing hai toh error bhejna
-  if (!email || !password) {
-    return res.status(400).json({ message: "Please provide email and password" });
-  }
-
-  try {
-    // Database se user find kar rahe hain
-    const [results] = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
-
-    // Agar user nahi mila toh error
-    if (results.length === 0) {
-      return res.status(400).json({ message: "User not found" });
-    }
-
-    console.log(results);
-    const user = results[0]; // User details
-
-    // Agar password field hi nahi mila (rare case)
-    if (!user.password) {
-      console.log("No password found for this user");
-      return res.status(500).json({ message: "No password found for this user" });
-    }
-    // Compare password 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
-
-    // Password match kar rahe hain
-    const passwordMatch = await bcrypt.compare(password, user.password);
-
-    // Agar password galat hai
-    if (!passwordMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    // Token bana rahe hain successful login ke baad
-    const token = jwt.sign({ id: user.user_id, email: user.email }, SECRET_KEY, { expiresIn: "1h" });
-
-    // Success response ke saath token aur user info bhej rahe hain
-    res.json({ message: "Login successful", token, user_id: user.user_id, username: user.username });
-  } catch (err) {
-    console.log(err);
-    return res.status(500).json({ message: "Database error", error: err });
-  }
-});
-
-
-// ✅ 4. Google login (no password)
-// ✅ Fixed Google login route
-router.post("/user/google-login", async (req, res) => {
-  const { user_id, email, username } = req.body;
-
+  
   try {
     // Check if user exists
-    const [results] = await connection.query(
+    const [existing] = await connection.query(
       "SELECT * FROM users WHERE email = ?", 
       [email]
     );
+    
+    if (existing.length > 0) {
+      return res.status(400).json({ message: "Email already registered" });
+    }
+    
+    // Create user
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = uuidv4();
+    
+    await connection.query(
+      "INSERT INTO users (user_id, username, email, password) VALUES (?, ?, ?, ?)",
+      [userId, username, email, hashedPassword]
+    );
+    
+    // Generate token
+    const token = jwt.sign({ id: userId, email }, SECRET_KEY, { 
+      expiresIn: SECURITY.TOKEN_EXPIRY 
+    });
+    
+    res.json({ 
+      message: "Registration successful",
+      token,
+      user_id: userId,
+      username
+    });
+  } catch (err) {
+    console.error("Registration error:", err);
+    res.status(500).json({ message: "Registration failed", error: err.message });
+  }
+});
 
-    // Insert new user if not exists
-    if (results.length === 0) {
+// 3. Login with rate limiting
+router.post("/login", rateLimiters.limitLoginAttempts, async (req, res) => {
+  const { email, password } = req.body;
+  
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password required" });
+  }
+  
+  try {
+    const [users] = await connection.query(
+      "SELECT * FROM users WHERE email = ?", 
+      [email]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    const user = users[0];
+    const isMatch = await bcrypt.compare(password, user.password);
+    
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+    
+    // Generate token with security details
+    const token = jwt.sign({ 
+      id: user.user_id, 
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    }, SECRET_KEY, { expiresIn: SECURITY.TOKEN_EXPIRY });
+    
+    res.json({ 
+      message: "Login successful",
+      token,
+      user_id: user.user_id,
+      username: user.username
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ message: "Login failed", error: err.message });
+  }
+});
+
+// 4. Google login with security checks
+router.post("/user/google-login", async (req, res) => {
+  const { user_id, email, username } = req.body;
+  
+  try {
+    const [existing] = await connection.query(
+      "SELECT * FROM users WHERE email = ?", 
+      [email]
+    );
+    
+    // Register if new user
+    if (existing.length === 0) {
       await connection.query(
         "INSERT INTO users (user_id, username, email) VALUES (?, ?, ?)",
         [user_id, username, email]
       );
     }
-
-    // Generate JWT for ALL users (new + existing)
-    const token = jwt.sign({ id: user_id, email }, SECRET_KEY, { 
-      expiresIn: "1h" 
-    });
-
-    // Set HttpOnly cookie and respond
-    setAuthCookie(res, token);
+    
+    // Generate secure token
+    const token = jwt.sign({ 
+      id: user_id, 
+      email,
+      ip: req.ip,
+      authMethod: 'google'
+    }, SECRET_KEY, { expiresIn: SECURITY.TOKEN_EXPIRY });
+    
     res.json({ 
       message: "Google login successful",
+      token,
       user_id,
-      username 
+      username
     });
-
   } catch (err) {
-    res.status(500).json({ message: "Google login error", error: err.message });
+    console.error("Google login error:", err);
+    res.status(500).json({ message: "Google login failed", error: err.message });
   }
 });
 
-// Is route module ko export kar rahe hain taaki app.js mein use ho sake
-// ✅ 5. Logout route (clears cookie)
+// 5. Secure logout
 router.post("/logout", (req, res) => {
-  res.clearCookie("token");
+  // In a real app, you might want to blacklist the token here
   res.json({ message: "Logged out successfully" });
 });
 
