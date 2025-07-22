@@ -15,6 +15,8 @@ app.use(cors({
   credentials: true
 }));
 
+
+
 const { PORT = 3000 } = require("./config/env");
 
 const corsOptions = {
@@ -115,13 +117,15 @@ app.get("/api/news", async (req, res) => {
   }
 });
 
-const genAI = new GoogleGenerativeAI("AIzaSyB-2bhc_UYCa-tfOIv5y5SEcE_p-sZibAA");
+const genAI = new GoogleGenerativeAI("AIzaSyAWMN2Vy-HgEFxHYWJKahBwjyaFSJ9lL9s");
 
 app.post("/api/crypto-query", async (req, res) => {
   const { query } = req.body;
+  console.log("Received crypto query:", query);
+  
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
     const prompt = `
       You are a cryptocurrency expert. Provide a concise answer (1-2 sentences) for: "${query}".
       Focus on theoretical or general crypto topics, avoiding real-time data, comparisons, or tables.
