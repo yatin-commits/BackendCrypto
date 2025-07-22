@@ -11,7 +11,7 @@ const io = socketIo(server, {
   cors: {
     origin: [
       "http://localhost:5173",
-      "https://crypto-frontend-khaki.vercel.app"
+      "https://cointrading.vercel.app"
     ],
     methods: ["GET", "POST"],
     credentials: true

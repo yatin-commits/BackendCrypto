@@ -10,7 +10,7 @@ const app = express();
 app.use(cors({
   origin: [
     'http://localhost:5173', 
-    'https://crypto-frontend-khaki.vercel.app'
+    'https://cointrading.vercel.app/'
   ],
   credentials: true
 }));
@@ -18,7 +18,7 @@ app.use(cors({
 const { PORT = 3000 } = require("./config/env");
 
 const corsOptions = {
-  origin: ["http://localhost:5173", "https://crypto-frontend-khaki.vercel.app"],
+  origin: ["http://localhost:5173", "https://cointrading.vercel.app"],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
