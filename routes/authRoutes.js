@@ -39,13 +39,14 @@ const rateLimiters = {
       return next();
     }
     
-    // Check if limit exceeded
-    if (this.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
-      const waitTime = Math.ceil((3600000 - (now - this.otpRequests[ip].firstAttempt)) / 1000;
-      return res.status(429).json({
-        message: `Too many OTP requests. Try again in ${waitTime} seconds.`
-      });
-    }
+  // Check if limit exceeded
+if (this.otpRequests[ip].count >= SECURITY.MAX_OTP_REQUESTS) {
+  const waitTime = Math.ceil((3600000 - (now - this.otpRequests[ip].firstAttempt)) / 1000);
+  return res.status(429).json({
+    message: `Too many OTP requests. Try again in ${waitTime} seconds.`
+  });
+}
+
     
     this.otpRequests[ip].count++;
     next();
