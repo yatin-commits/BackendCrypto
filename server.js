@@ -4,8 +4,17 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { setupWebSocketServer } = require("./utils/websocket");
 const http = require("http");
 const axios = require("axios");
-
 const app = express();
+
+// In your backend (app.js or server entry file)
+app.use(cors({
+  origin: [
+    'http://localhost:5173', 
+    'https://crypto-frontend-khaki.vercel.app'
+  ],
+  credentials: true
+}));
+
 const { PORT = 3000 } = require("./config/env");
 
 const corsOptions = {
