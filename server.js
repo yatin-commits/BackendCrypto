@@ -4,6 +4,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { setupWebSocketServer } = require("./utils/websocket");
 const http = require("http");
 const axios = require("axios");
+const Redis = require("./utils/redisClient"); // Import Redis client
 const app = express();
 
 // In your backend (app.js or server entry file)
@@ -18,6 +19,7 @@ app.use(cors({
 
 
 const { PORT = 3000 } = require("./config/env");
+const redis = require("./utils/redisClient");
 
 const corsOptions = {
   origin: ["http://localhost:5173", "https://cointrading.vercel.app"],
@@ -46,6 +48,7 @@ app.get("/", (req, res) => {
   res.json({ message: "Welcome to the Crypto API!" });
 });
 
+//redis://default@127.0.0.1:6379
 app.use("/api", require("./routes/authRoutes"));
 app.use("/api", require("./routes/walletRoutes"));
 app.use("/api", require("./routes/wishlistRoutes"));
@@ -80,10 +83,10 @@ app.get("/api/nomics/currencies/ticker", async (req, res) => {
 const newsCache = new Map();
 app.get("/api/news", async (req, res) => {
   const { q } = req.query;
-  const cacheKey = JSON.stringify(req.query);
+  const cachedKey = JSON.stringify(req.query);
 
   // Check cache
-  const cached = newsCache.get(cacheKey);
+  const cached = newsCache.get(cachedKey);
   if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
     return res.json(cached.data);
   }
@@ -91,8 +94,15 @@ app.get("/api/news", async (req, res) => {
   if (!q) {
     return res.status(400).json({ message: 'Query parameter "q" is required' });
   }
+  const cacheKey = `news:${q.toLowerCase()}`;
 
   try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log("🔁 News served from Redis");
+      return res.json(JSON.parse(cached));
+    }
+    
     const response = await axios.get("https://newsapi.org/v2/everything", {
       params: {
         q,
@@ -103,8 +113,10 @@ app.get("/api/news", async (req, res) => {
       },
     });
 
-    newsCache.set(cacheKey, { data: response.data, timestamp: Date.now() });
-    res.json(response.data);
+    const newsData = response.data;
+    await redis.set(cacheKey, JSON.stringify(newsData), "EX", 300);
+    console.log("🆕 News fetched & cached in Redis");
+    res.json(newsData);
   } catch (err) {
     console.error("News API Error:", {
       message: err.message,
@@ -112,7 +124,7 @@ app.get("/api/news", async (req, res) => {
       data: err.response?.data,
     });
     res.status(err.response?.status || 500).json({
-      message: err.response?.data?.message || 'Error fetching news',
+      message: err.response?.data?.message || "Error fetching news",
     });
   }
 });

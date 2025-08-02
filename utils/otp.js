@@ -11,7 +11,7 @@ const transporter = nodemailer.createTransport({
   rateLimit: 5, // Max 5 messages per second
 });
 
-// Enhanced OTP storage with security features
+
 const otpStorage = {
   data: {},
   
